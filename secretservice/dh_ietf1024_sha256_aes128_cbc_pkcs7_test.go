@@ -1,6 +1,7 @@
 package secretservice
 
 import (
+	"crypto/aes"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -81,6 +82,16 @@ func TestPKCS7(t *testing.T) {
 	require.Error(t, err)
 	_, err = unpadPKCS7([]byte{1, 2, 3, 4, 1, 1, 1, 2}, 4)
 	require.Error(t, err)
+	_, err = unpadPKCS7([]byte{1, 2, 3, 0}, 4)
+	require.EqualError(t, err, "invalid pkcs7 padding length 0")
+	_, err = unpadPKCS7([]byte{1, 2, 3, 5, 5, 5, 5, 5}, 4)
+	require.EqualError(t, err, "invalid pkcs7 padding length 5")
+	_, err = unpadPKCS7([]byte{1}, 0)
+	require.EqualError(t, err, "invalid block size 0")
+	_, err = unpadPKCS7([]byte{1}, -1)
+	require.EqualError(t, err, "invalid block size -1")
+	_, err = unpadPKCS7([]byte{1}, 256)
+	require.EqualError(t, err, "invalid block size 256")
 }
 
 // TestDecryptionErrors tests that decryption errors are properly returned
@@ -98,20 +109,20 @@ func TestDecryptionErrors(t *testing.T) {
 	_, err := unauthenticatedAESCBCDecrypt(invalidIV, invalidCiphertext, key)
 	require.Error(t, err, "decryption with invalid padding should return an error")
 
-	// Test 2: Wrong key should produce unpadding errors
-	plaintext := []byte("secret message")
+	// Test 2: An invalid AES key size should return an error.
+	_, err = unauthenticatedAESCBCDecrypt(invalidIV, invalidCiphertext, []byte("too short"))
+	require.Error(t, err, "decryption with an invalid key size should return an error")
+
+	// Test 3: Corrupting the ciphertext should produce invalid padding.
+	// The 30-byte plaintext produces two ciphertext blocks with two bytes of
+	// padding. Flipping the last byte of the penultimate ciphertext block
+	// deterministically flips the last padding byte from 0x02 to 0xfd.
+	plaintext := []byte("0123456789abcdefsecret message")
 	iv, ciphertext, err := unauthenticatedAESCBCEncrypt(plaintext, key)
 	require.NoError(t, err)
 
-	wrongKey := []byte("WRONG KEY HERE!!")
-	_, err = unauthenticatedAESCBCDecrypt(iv, ciphertext, wrongKey)
-	require.Error(t, err, "decryption with wrong key should return an error")
-
-	// Test 3: Corrupted ciphertext should error
-	corruptedCiphertext := make([]byte, len(ciphertext))
-	copy(corruptedCiphertext, ciphertext)
-	// Corrupt the last block (which contains padding)
-	corruptedCiphertext[len(corruptedCiphertext)-1] ^= 0xFF
+	corruptedCiphertext := append([]byte(nil), ciphertext...)
+	corruptedCiphertext[len(corruptedCiphertext)-aes.BlockSize-1] ^= 0xFF
 	_, err = unauthenticatedAESCBCDecrypt(iv, corruptedCiphertext, key)
 	require.Error(t, err, "decryption of corrupted ciphertext should return an error")
 }
